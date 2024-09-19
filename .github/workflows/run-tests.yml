@@ -1,17 +1,13 @@
-name: Run Tests on Push to session-1 and Pull Request to main
+name: Test-Build-Deploy Pipeline
 
 on:
   push:
     branches:
-      - session-1
-  pull_request:
-    branches:
+      - session-3
       - main
-
 jobs:
   test:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -19,7 +15,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'  # Specify the Python version you want to use
+          python-version: '3.11'  
 
       - name: Install dependencies
         run: |
@@ -29,3 +25,48 @@ jobs:
       - name: Run tests
         run: |
           pytest --maxfail=1 --disable-warnings
+
+  build_and_push:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ secrets.DOCKER_HUB_USERNAME }}/tech-trek:${{ github.sha }}
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build_and_push
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v1
+        with:
+          service: ${{ github.actor }}-tech-trek
+          image: docker.io/${{ secrets.DOCKER_HUB_USERNAME }}/tech-trek:${{ github.sha }}
+          region: us-central1
+          flags: "--allow-unauthenticated"
+
+      - name: Get Cloud Run Service URL
+        run: |
+          URL=$(gcloud run services describe "${{ github.actor }}-tech-trek" --region us-central1 --format 'value(status.url)')
+          echo "Cloud Run service URL: $URL"
+          echo "SERVICE_URL=$URL" >> $GITHUB_ENV
